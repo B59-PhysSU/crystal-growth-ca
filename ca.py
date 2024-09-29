@@ -134,6 +134,12 @@ def cli(args=None):
         help="The initial fraction of diffusing cells (default 0.1)",
     )
     parser.add_argument(
+        "--nds",
+        type=int,
+        default=5,
+        help="The number of diffusion steps to take in each time step (default 5)",
+    )
+    parser.add_argument(
         "-T",
         type=int,
         default=100,
@@ -160,14 +166,16 @@ def prepare_save_dir(save_dir):
 
 def main():
     args = cli()
-    print(f"Starting simulation with N={args.N}, D={args.D}, T={args.T}")
+    print(
+        f"Starting simulation with N={args.N}, D={args.D}, T={args.T}, nds={args.nds}"
+    )
     save_dir = prepare_save_dir(args.save_dir)
     state, diffusing = prepare_initial_state(args.N, args.D)
     n_diffusing_initial = diffusing.shape[0]
 
     fig, ax = plt.subplots()
     for i in range(args.T):
-        state, diffusing = step_simulation(state, diffusing)
+        state, diffusing = step_simulation(state, diffusing, nds_count=args.nds)
         ax.imshow(state, cmap="viridis")
         plt.savefig(save_dir / f"frame_{i}.png")
 
