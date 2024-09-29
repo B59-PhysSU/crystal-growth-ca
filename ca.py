@@ -160,6 +160,7 @@ def prepare_save_dir(save_dir):
 
 def main():
     args = cli()
+    print(f"Starting simulation with N={args.N}, D={args.D}, T={args.T}")
     save_dir = prepare_save_dir(args.save_dir)
     state, diffusing = prepare_initial_state(args.N, args.D)
     n_diffusing_initial = diffusing.shape[0]
