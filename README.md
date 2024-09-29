@@ -57,5 +57,5 @@ python ca.py --help
 ## Примерен старт с аргументи:
 
 ```bash
-python3 ./ca.py -T 1000 -D 0.1 -N 500 --save-dir ca_output
+python3 ./ca.py -T 1000 -D 0.1 -N 500 --nds 5 --save-dir ca_output
 ```
