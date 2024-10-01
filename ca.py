@@ -177,7 +177,7 @@ def main():
     for i in range(args.T):
         state, diffusing = step_simulation(state, diffusing, nds_count=args.nds)
         ax.imshow(state, cmap="viridis")
-        plt.savefig(save_dir / f"frame_{i}.png")
+        plt.savefig(save_dir / f"frame_{i}.png", dpi=300)
 
         print(f"Step {i + 1}. Number of diffusing cells: {diffusing.shape[0]}")
 
