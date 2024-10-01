@@ -94,7 +94,7 @@ def diffuse_one(state: np.ndarray, diffusing_list: np.ndarray, idx: int):
 
 @njit
 def diffuse_all(state: np.ndarray, diffusing_list: np.ndarray):
-    indices = np.random.choice(len(diffusing_list), len(diffusing_list) // 2, replace=False)
+    indices = np.random.choice(len(diffusing_list), len(diffusing_list), replace=False)
     for idx in indices:
         diffuse_one(state, diffusing_list, idx)
     # shuffle the list in place to avoid biasing the diffusion towards the end of the list
