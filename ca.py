@@ -26,9 +26,9 @@ def prepare_initial_state(sim_size, initial_diffusing_fraction):
     # prepare the initial state
     initial_state = np.zeros((sim_size, sim_size), dtype=np.uint8)
     initial_diffusing = np.random.randint(0, sim_size, (K_diffusing, 2))
-    initial_state[initial_diffusing[:, 0], initial_diffusing[:, 1]] = (
-        CellState.DIFFUSING.value
-    )
+    initial_state[
+        initial_diffusing[:, 0], initial_diffusing[:, 1]
+    ] = CellState.DIFFUSING.value
     initial_state[sim_size // 2, sim_size // 2] = CellState.AGGREGATED.value
     initial_diffusing = np.argwhere(initial_state == CellState.DIFFUSING.value)
     return initial_state, initial_diffusing
@@ -94,8 +94,11 @@ def diffuse_one(state: np.ndarray, diffusing_list: np.ndarray, idx: int):
 
 @njit
 def diffuse_all(state: np.ndarray, diffusing_list: np.ndarray):
-    for idx in range(len(diffusing_list)):
+    indices = np.random.choice(len(diffusing_list), len(diffusing_list) // 2, replace=False)
+    for idx in indices:
         diffuse_one(state, diffusing_list, idx)
+    # shuffle the list in place to avoid biasing the diffusion towards the end of the list
+    np.random.shuffle(diffusing_list)
 
 
 @njit
