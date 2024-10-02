@@ -105,7 +105,8 @@ def resolve_conflicts(
     target_map.fill(-1)  # Reset target map
     move_mask.fill(0)  # Reset move mask
     # target_map shows which cells in the grid have already been claimed by a particle
-    # target map values of -1 mean that the cell is not claimed, otherwise the value is the index of the particle
+    # target map values of -1 mean that the cell is not claimed, otherwise the value is the index of the particle in the diffusing_list
+    # that will claim the cell at i, j
     # move_mask shows which particles have already moved to a new cell for faster processing (value == 0 means not moved)
 
     # First, resolve conflicts: mark one particle per target cell
