@@ -7,7 +7,7 @@ from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 
 # each enum variant is a state of the cell
@@ -73,35 +73,63 @@ def aggregation_step(
     return new_state, diffusing_list
 
 
+@njit(parallel=True)
+def calculate_moves(state: np.ndarray, diffusing_list: np.ndarray):
+    """First pass: calculate desired moves for each particle."""
+    move_targets = -np.ones((diffusing_list.shape[0], 2), dtype=np.int32)  # Store target moves (-1 means no move)
+
+    for idx in prange(diffusing_list.shape[0]):  # Parallel loop over all diffusing particles
+        i, j = diffusing_list[idx]
+        empty_neighbors = []
+
+        # Check north, south, east, west neighbors
+        for di, dj in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            ni, nj = pbc_indices(i + di, j + dj, state.shape[0])
+            if state[ni, nj] == CellState.EMPTY.value:
+                empty_neighbors.append((ni, nj))
+
+        if empty_neighbors:
+            # Randomly choose an empty neighbor to move to
+            move_targets[idx] = empty_neighbors[np.random.randint(len(empty_neighbors))]
+
+    return move_targets
+
+@njit(parallel=True)
+def resolve_conflicts(state: np.ndarray, diffusing_list: np.ndarray, move_targets: np.ndarray):
+    """Second pass: resolve conflicts and apply moves."""
+    target_map = -np.ones(state.shape, dtype=np.int32)  # Map to track which cell is being targeted
+    move_mask = np.zeros(len(diffusing_list), dtype=np.uint8)  # Mask to mark valid moves
+
+    # First, resolve conflicts: mark one particle per target cell
+    for idx in prange(len(diffusing_list)):
+        target = move_targets[idx]
+        if target[0] == -1:  # No move for this particle
+            continue
+        ni, nj = target
+        if target_map[ni, nj] == -1:  # No conflict, mark this particle's move
+            target_map[ni, nj] = idx
+            move_mask[idx] = 1
+
+    # Second, apply valid moves
+    for idx in prange(len(diffusing_list)):
+        if move_mask[idx]:  # Only apply moves that were resolved
+            i, j = diffusing_list[idx]
+            ni, nj = move_targets[idx]
+            state[ni, nj] = CellState.DIFFUSING.value  # Move particle
+            state[i, j] = CellState.EMPTY.value  # Clear old position
+            diffusing_list[idx] = [ni, nj]  # Update particle position
+
 @njit
-def diffuse_one(state: np.ndarray, diffusing_list: np.ndarray, idx: int):
-    i, j = diffusing_list[idx]
+def diffuse_all_parallel(state: np.ndarray, diffusing_list: np.ndarray):
+    """Diffuse particles in parallel with conflict resolution."""
+    # Step 1: Calculate desired moves for all particles
+    move_targets = calculate_moves(state, diffusing_list)
+    
+    # Step 2: Resolve conflicts and apply valid moves
+    resolve_conflicts(state, diffusing_list, move_targets)
+    np.random.shuffle(diffusing_list)  # Shuffle diffusing list to avoid bias
 
-    empty_neighbors = []
-    for di, dj in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-        ni, nj = pbc_indices(i + di, j + dj, state.shape[0])
-        if state[ni, nj] == CellState.EMPTY.value:
-            empty_neighbors.append((ni, nj))
-
-    if empty_neighbors:
-        new_i, new_j = empty_neighbors[np.random.randint(len(empty_neighbors))]
-        state[new_i, new_j] = CellState.DIFFUSING.value
-        state[i, j] = CellState.EMPTY.value
-        diffusing_list[idx] = [new_i, new_j]
-
-    return diffusing_list
-
-
-@njit
-def diffuse_all(state: np.ndarray, diffusing_list: np.ndarray):
-    indices = np.random.permutation(
-        len(diffusing_list)
-    )  # visit the cells in a random order
-    for idx in indices:
-        diffuse_one(state, diffusing_list, idx)
-    # shuffle the list in place to avoid biasing the diffusion towards the end of the list
-    np.random.shuffle(diffusing_list)
-
+diffuse_all = diffuse_all_parallel
 
 @njit
 def nds(state: np.ndarray, diffusing_list: np.ndarray, nds_count: int):
