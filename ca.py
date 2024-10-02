@@ -26,9 +26,9 @@ def prepare_initial_state(sim_size, initial_diffusing_fraction):
     # prepare the initial state
     initial_state = np.zeros((sim_size, sim_size), dtype=np.uint8)
     initial_diffusing = np.random.randint(0, sim_size, (K_diffusing, 2))
-    initial_state[initial_diffusing[:, 0], initial_diffusing[:, 1]] = (
-        CellState.DIFFUSING.value
-    )
+    initial_state[
+        initial_diffusing[:, 0], initial_diffusing[:, 1]
+    ] = CellState.DIFFUSING.value
     initial_state[sim_size // 2, sim_size // 2] = CellState.AGGREGATED.value
     initial_diffusing = np.argwhere(initial_state == CellState.DIFFUSING.value)
     return initial_state, initial_diffusing
@@ -94,8 +94,13 @@ def diffuse_one(state: np.ndarray, diffusing_list: np.ndarray, idx: int):
 
 @njit
 def diffuse_all(state: np.ndarray, diffusing_list: np.ndarray):
-    for idx in range(len(diffusing_list)):
+    indices = np.random.permutation(
+        len(diffusing_list)
+    )  # visit the cells in a random order
+    for idx in indices:
         diffuse_one(state, diffusing_list, idx)
+    # shuffle the list in place to avoid biasing the diffusion towards the end of the list
+    np.random.shuffle(diffusing_list)
 
 
 @njit
@@ -154,13 +159,22 @@ def cli(args=None):
         default=default_dir,
         help="The directory where frames of the simulation will be saved",
     )
+    parser.add_argument(
+        "--save-npz",
+        type=bool,
+        default=False,
+        action=argparse.BooleanOptionalAction,
+        help="Save states as npz files along with images",
+    )
     return parser.parse_args(args)
 
 
-def prepare_save_dir(save_dir):
+def prepare_save_dir(save_dir, make_npz_dir=False):
     save_dir = Path(save_dir)
     shutil.rmtree(save_dir, ignore_errors=True)
     os.makedirs(save_dir, exist_ok=True)
+    if make_npz_dir:
+        os.makedirs(save_dir / "npz", exist_ok=True)
     return save_dir
 
 
@@ -169,22 +183,33 @@ def main():
     print(
         f"Starting simulation with N={args.N}, D={args.D}, T={args.T}, nds={args.nds}"
     )
-    save_dir = prepare_save_dir(args.save_dir)
+    save_dir = prepare_save_dir(args.save_dir, make_npz_dir=args.save_npz)
     state, diffusing = prepare_initial_state(args.N, args.D)
     n_diffusing_initial = diffusing.shape[0]
 
-    fig, ax = plt.subplots()
+    if args.save_npz:
+        print(
+            f"Saving states as npz files to {save_dir / 'npz'}. "
+            f"Keys for npz files are 'state' and 'diffusing'"
+        )
+
+    _fig, ax = plt.subplots()
     for i in range(args.T):
         state, diffusing = step_simulation(state, diffusing, nds_count=args.nds)
+
         ax.imshow(state, cmap="viridis")
         plt.savefig(save_dir / f"frame_{i}.png", dpi=300)
+        if args.save_npz:
+            np.savez_compressed(
+                save_dir / "npz" / f"frame_{i}.npz", state=state, diffusing=diffusing
+            )
 
         print(f"Step {i + 1}. Number of diffusing cells: {diffusing.shape[0]}")
 
-        # break if 1% of the original number of diffusing cells are left
-        if diffusing.shape[0] < n_diffusing_initial * 0.01:
+        if diffusing.shape[0] < n_diffusing_initial * 0.05:
             print(
-                f"Stopping early at step {i + 1} as less than 1% of the original number of diffusing cells remain"
+                f"Stopping early at step {i + 1} as less than 5% of the original "
+                f"number of diffusing cells remain"
             )
             break
 
