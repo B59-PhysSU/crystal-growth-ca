@@ -7,7 +7,7 @@ from typing import Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-from numba import njit, prange
+from numba import njit, prange, set_num_threads
 
 
 # each enum variant is a state of the cell
@@ -26,9 +26,9 @@ def prepare_initial_state(sim_size, initial_diffusing_fraction):
     # prepare the initial state
     initial_state = np.zeros((sim_size, sim_size), dtype=np.uint8)
     initial_diffusing = np.random.randint(0, sim_size, (K_diffusing, 2))
-    initial_state[
-        initial_diffusing[:, 0], initial_diffusing[:, 1]
-    ] = CellState.DIFFUSING.value
+    initial_state[initial_diffusing[:, 0], initial_diffusing[:, 1]] = (
+        CellState.DIFFUSING.value
+    )
     initial_state[sim_size // 2, sim_size // 2] = CellState.AGGREGATED.value
     initial_diffusing = np.argwhere(initial_state == CellState.DIFFUSING.value)
     return initial_state, initial_diffusing
@@ -75,71 +75,94 @@ def aggregation_step(
 
 @njit(parallel=True)
 def calculate_moves(state: np.ndarray, diffusing_list: np.ndarray):
-    """First pass: calculate desired moves for each particle."""
-    move_targets = -np.ones((diffusing_list.shape[0], 2), dtype=np.int32)  # Store target moves (-1 means no move)
+    move_targets = -np.ones(
+        diffusing_list.shape, dtype=np.int32
+    )  # Store target moves (-1 means no move)
 
-    for idx in prange(diffusing_list.shape[0]):  # Parallel loop over all diffusing particles
+    for idx in prange(diffusing_list.shape[0]):
         i, j = diffusing_list[idx]
         empty_neighbors = []
 
-        # Check north, south, east, west neighbors
         for di, dj in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             ni, nj = pbc_indices(i + di, j + dj, state.shape[0])
             if state[ni, nj] == CellState.EMPTY.value:
                 empty_neighbors.append((ni, nj))
 
         if empty_neighbors:
-            # Randomly choose an empty neighbor to move to
             move_targets[idx] = empty_neighbors[np.random.randint(len(empty_neighbors))]
 
     return move_targets
 
+
 @njit(parallel=True)
-def resolve_conflicts(state: np.ndarray, diffusing_list: np.ndarray, move_targets: np.ndarray):
-    """Second pass: resolve conflicts and apply moves."""
-    target_map = -np.ones(state.shape, dtype=np.int32)  # Map to track which cell is being targeted
-    move_mask = np.zeros(len(diffusing_list), dtype=np.uint8)  # Mask to mark valid moves
+def resolve_conflicts(
+    state: np.ndarray,
+    diffusing_list: np.ndarray,
+    move_targets: np.ndarray,
+    target_map: np.ndarray,
+    move_mask: np.ndarray,
+):
+    target_map.fill(-1)  # Reset target map
+    move_mask.fill(0)  # Reset move mask
+    # target_map shows which cells in the grid have already been claimed by a particle
+    # target map values of -1 mean that the cell is not claimed, otherwise the value is the index of the particle
+    # move_mask shows which particles have already moved to a new cell for faster processing (value == 0 means not moved)
 
     # First, resolve conflicts: mark one particle per target cell
     for idx in prange(len(diffusing_list)):
         target = move_targets[idx]
-        if target[0] == -1:  # No move for this particle
+        if target[0] == -1:  # No move for this particle (it had no empty neighbors)
             continue
+
+        # from here on particle wants to jump to an neighbouring empty cell
         ni, nj = target
-        if target_map[ni, nj] == -1:  # No conflict, mark this particle's move
-            target_map[ni, nj] = idx
-            move_mask[idx] = 1
+        if (
+            target_map[ni, nj] == -1
+        ):  # There is no other particle that has already claimed this cell (-1)
+            target_map[ni, nj] = idx  # claim the cell
+            move_mask[idx] = 1  # Mark this particle as resolved (it got to move)
 
     # Second, apply valid moves
     for idx in prange(len(diffusing_list)):
-        if move_mask[idx]:  # Only apply moves that were resolved
-            i, j = diffusing_list[idx]
-            ni, nj = move_targets[idx]
-            state[ni, nj] = CellState.DIFFUSING.value  # Move particle
-            state[i, j] = CellState.EMPTY.value  # Clear old position
+        if move_mask[idx]:  # if this particle claimed a cell
+            i, j = diffusing_list[idx]  # get the current position
+            ni, nj = move_targets[idx]  # get the target position
+            state[ni, nj] = CellState.DIFFUSING.value  # move to target position
+            state[i, j] = CellState.EMPTY.value  # leave the current position
             diffusing_list[idx] = [ni, nj]  # Update particle position
 
+
 @njit
-def diffuse_all_parallel(state: np.ndarray, diffusing_list: np.ndarray):
-    """Diffuse particles in parallel with conflict resolution."""
+def diffuse_all(
+    state: np.ndarray,
+    diffusing_list: np.ndarray,
+    target_map: np.ndarray,
+    move_mask: np.ndarray,
+):
+
     # Step 1: Calculate desired moves for all particles
     move_targets = calculate_moves(state, diffusing_list)
-    
+
     # Step 2: Resolve conflicts and apply valid moves
-    resolve_conflicts(state, diffusing_list, move_targets)
+    resolve_conflicts(state, diffusing_list, move_targets, target_map, move_mask)
     np.random.shuffle(diffusing_list)  # Shuffle diffusing list to avoid bias
 
-diffuse_all = diffuse_all_parallel
 
 @njit
-def nds(state: np.ndarray, diffusing_list: np.ndarray, nds_count: int):
+def nds(
+    state: np.ndarray,
+    diffusing_list: np.ndarray,
+    nds_count: int,
+    target_map: np.ndarray,
+    move_mask: np.ndarray,
+):
     for _ in range(nds_count):
-        diffuse_all(state, diffusing_list)
+        diffuse_all(state, diffusing_list, target_map, move_mask)
 
 
 @njit
-def step_simulation(state, diffusing, nds_count=5):
-    nds(state, diffusing, nds_count)  # nds works in place
+def step_simulation(state, diffusing, target_map, move_mask, nds_count=5):
+    nds(state, diffusing, nds_count, target_map, move_mask)  # nds works in place
     state, diffusing = aggregation_step(state, diffusing)
     return state, diffusing
 
@@ -194,6 +217,13 @@ def cli(args=None):
         action=argparse.BooleanOptionalAction,
         help="Save states as npz files along with images",
     )
+    parser.add_argument(
+        "--save-plots",
+        type=bool,
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Save plots of the state at each time step",
+    )
     return parser.parse_args(args)
 
 
@@ -213,6 +243,12 @@ def main():
     )
     save_dir = prepare_save_dir(args.save_dir, make_npz_dir=args.save_npz)
     state, diffusing = prepare_initial_state(args.N, args.D)
+
+    # pre-allocate target map and move mask to avoid re-allocating memory
+    # on every diffusion step
+    target_map = -np.ones(state.shape, dtype=np.int32)
+    move_mask = np.zeros(len(diffusing), dtype=np.uint8)
+
     n_diffusing_initial = diffusing.shape[0]
 
     if args.save_npz:
@@ -220,13 +256,19 @@ def main():
             f"Saving states as npz files to {save_dir / 'npz'}. "
             f"Keys for npz files are 'state' and 'diffusing'"
         )
+    if args.save_plots:
+        print("Warning saving plots will slow down the simulation!")
 
     _fig, ax = plt.subplots()
     for i in range(args.T):
-        state, diffusing = step_simulation(state, diffusing, nds_count=args.nds)
+        state, diffusing = step_simulation(
+            state, diffusing, target_map, move_mask, nds_count=args.nds
+        )
 
-        ax.imshow(state, cmap="viridis")
-        plt.savefig(save_dir / f"frame_{i}.png", dpi=300)
+        if args.save_plots:
+            ax.imshow(state, cmap="viridis")
+            plt.savefig(save_dir / f"frame_{i}.png", dpi=300)
+
         if args.save_npz:
             np.savez_compressed(
                 save_dir / "npz" / f"frame_{i}.npz", state=state, diffusing=diffusing
