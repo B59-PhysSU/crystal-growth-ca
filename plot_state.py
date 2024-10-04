@@ -35,6 +35,12 @@ parser.add_argument(
     default=None,
     help="The file to save the plot to. If no filename is provided, the name of the npz file will be used",
 )
+parser.add_argument(
+    "--plot-diffusing",
+    default=False,
+    action=argparse.BooleanOptionalAction,
+    help="Plot the diffusing particles. Default is False",
+)
 parser.add_argument("--dpi", default=300, type=int, help="The DPI of the saved image")
 args = parser.parse_args()
 
@@ -45,6 +51,8 @@ if not npz_file.exists():
 
 with np.load(npz_file) as data:
     state = data["state"]
+    if not args.plot_diffusing:
+        state[state == 1] = 0
     plt.imshow(state)
     plt.set_cmap("viridis")
 
