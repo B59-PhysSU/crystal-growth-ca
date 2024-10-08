@@ -21,6 +21,7 @@ class CellState(enum.Enum):
 
 
 def prepare_initial_state(sim_size, initial_diffusing_fraction):
+    assert sim_size > 50, "Simulation size must be greater than 50"
     K_diffusing = int(initial_diffusing_fraction * sim_size * sim_size)
 
     # prepare the initial state
@@ -29,7 +30,12 @@ def prepare_initial_state(sim_size, initial_diffusing_fraction):
     initial_state[initial_diffusing[:, 0], initial_diffusing[:, 1]] = (
         CellState.DIFFUSING.value
     )
+    # make the initial state a plus-shape (four kinks)
     initial_state[sim_size // 2, sim_size // 2] = CellState.AGGREGATED.value
+    initial_state[sim_size // 2 - 1, sim_size // 2] = CellState.AGGREGATED.value
+    initial_state[sim_size // 2 + 1, sim_size // 2] = CellState.AGGREGATED.value
+    initial_state[sim_size // 2, sim_size // 2 - 1] = CellState.AGGREGATED.value
+    initial_state[sim_size // 2, sim_size // 2 + 1] = CellState.AGGREGATED.value
     initial_diffusing = np.argwhere(initial_state == CellState.DIFFUSING.value)
     return initial_state, initial_diffusing
 
@@ -44,15 +50,18 @@ def pbc_indices(i: int, j: int, n: int) -> Tuple[int, int]:
     return pbc(i, n), pbc(j, n)
 
 
+# aggregation (kink-generation) step
+# if any neighbour of a diffusing cell is aggregated, the diffusing cell becomes aggregated
 @njit(parallel=True)
 def aggregation_step(
     state: np.ndarray, diffusing_list: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     new_state = state.copy()
+    new_diffusing_list = diffusing_list.copy()
 
-    keep_mask = np.ones(len(diffusing_list), dtype=np.uint8)
-    for cell_idx in range(len(diffusing_list)):
-        cell_i, cell_j = diffusing_list[cell_idx]
+    keep_mask = np.ones(len(new_diffusing_list), dtype=np.uint8)
+    for cell_idx in prange(len(new_diffusing_list)):
+        cell_i, cell_j = new_diffusing_list[cell_idx]
 
         neighbour_states = np.array(
             [
@@ -68,9 +77,75 @@ def aggregation_step(
             keep_mask[cell_idx] = 0
             print(f"Cell at ({cell_i}, {cell_j}) aggregated")
 
-    diffusing_list = diffusing_list[keep_mask.astype(np.bool_)]
+    new_diffusing_list = new_diffusing_list[keep_mask.astype(np.bool_)]
 
-    return new_state, diffusing_list
+    return new_state, new_diffusing_list
+
+
+# attach to a kink position
+# where the four options for kink are:
+#   X       X        A         A
+# X D A   A D X    A D X     X D A
+#   A       A        X         X
+# where A -> aggregated, D -> diffusing, X -> Any state (aggregated, diffusing, empty)
+# only when the diffusing cell is at the kink position, it becomes aggregated
+@njit(parallel=True)
+def attach_to_kink_step(
+    state: np.ndarray, diffusing_list: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    new_state = state.copy()
+    new_diffusing_list = diffusing_list.copy()
+    keep_mask = np.ones(len(new_diffusing_list), dtype=np.uint8)
+
+    for cell_idx in prange(len(new_diffusing_list)):
+        cell_i, cell_j = new_diffusing_list[cell_idx]
+
+        # Neighbors in the 4 directions
+        n_up = state[pbc_indices(cell_i - 1, cell_j, state.shape[0])]
+        n_down = state[pbc_indices(cell_i + 1, cell_j, state.shape[0])]
+        n_left = state[pbc_indices(cell_i, cell_j - 1, state.shape[0])]
+        n_right = state[pbc_indices(cell_i, cell_j + 1, state.shape[0])]
+
+        # Kink configurations starting from the top and going clockwise
+        is_kink = False
+
+        #   X
+        # X D A
+        #   A
+        if (n_right == CellState.AGGREGATED.value) and (
+            n_down == CellState.AGGREGATED.value
+        ):
+            is_kink = True
+        #   X
+        # A D X
+        #   A
+        elif (n_left == CellState.AGGREGATED.value) and (
+            n_down == CellState.AGGREGATED.value
+        ):
+            is_kink = True
+        #   A
+        # A D X
+        #   X
+        elif (n_left == CellState.AGGREGATED.value) and (
+            n_up == CellState.AGGREGATED.value
+        ):
+            is_kink = True
+        #   A
+        # X D A
+        #   X
+        elif (n_right == CellState.AGGREGATED.value) and (
+            n_up == CellState.AGGREGATED.value
+        ):
+            is_kink = True
+        if is_kink:
+            print(f"Cell at ({cell_i}, {cell_j}) attached to kink")
+            new_state[cell_i, cell_j] = CellState.AGGREGATED.value
+            keep_mask[cell_idx] = 0
+
+    # Final filtering: keep only the diffusing cells that did not aggregate
+    new_diffusing_list = new_diffusing_list[keep_mask.astype(np.bool_)]
+
+    return new_state, new_diffusing_list
 
 
 @njit(parallel=True)
@@ -161,10 +236,27 @@ def nds(
         diffuse_all(state, diffusing_list, target_map, move_mask)
 
 
-@njit
-def step_simulation(state, diffusing, target_map, move_mask, nds_count=5):
+@njit(parallel=True)
+def step_simulation(
+    state, diffusing, target_map, move_mask, nds_count, attach_to_kink_probability
+):
     nds(state, diffusing, nds_count, target_map, move_mask)  # nds works in place
-    state, diffusing = aggregation_step(state, diffusing)
+
+    # split diffusing_list randomly in two sublists with attach_to_kink_probability
+    # probability of a particle going to the attach_to_kink_step sub-list
+    # and 1 - attach_to_kink_probability probability of a particle going to the aggregation_step sub-list
+    attach_to_kink_mask = (
+        np.random.rand(diffusing.shape[0]) < attach_to_kink_probability
+    )
+    diffusing_kink = diffusing[attach_to_kink_mask]
+    diffusing_agg = diffusing[~attach_to_kink_mask]
+
+    state, diffusing_agg = aggregation_step(state, diffusing_agg)
+    state, diffusing_kink = attach_to_kink_step(state, diffusing_kink)
+
+    # concatenate the two sublists back together and shuffle
+    diffusing = np.concatenate((diffusing_agg, diffusing_kink))
+    np.random.shuffle(diffusing)
     return state, diffusing
 
 
@@ -202,7 +294,12 @@ def cli(args=None):
         default=100,
         help="The number of time steps to run the simulation for (default 100)",
     )
-
+    parser.add_argument(
+        "--pA2k",
+        type=float,
+        default=0.8,
+        help="Probability of applying the a2k rule to a diffusing cell during CA run (default 0.8)",
+    )
     cwd = Path(os.getcwd())
     default_dir = cwd / "ca_output"
     parser.add_argument(
@@ -239,9 +336,7 @@ def prepare_save_dir(save_dir, make_npz_dir=False):
 
 def main():
     args = cli()
-    print(
-        f"Starting simulation with N={args.N}, D={args.D}, T={args.T}, nds={args.nds}"
-    )
+    print(f"Starting with the following arguments:\n{args}")
     save_dir = prepare_save_dir(args.save_dir, make_npz_dir=args.save_npz)
     state, diffusing = prepare_initial_state(args.N, args.D)
 
@@ -263,7 +358,12 @@ def main():
     _fig, ax = plt.subplots()
     for i in range(args.T):
         state, diffusing = step_simulation(
-            state, diffusing, target_map, move_mask, nds_count=args.nds
+            state,
+            diffusing,
+            target_map,
+            move_mask,
+            nds_count=args.nds,
+            attach_to_kink_probability=args.pA2k,
         )
 
         if args.save_plots:
