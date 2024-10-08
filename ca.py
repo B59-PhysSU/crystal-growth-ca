@@ -112,31 +112,28 @@ def attach_to_kink_step(
         #   X
         # X D A
         #   A
-        if (n_right == CellState.AGGREGATED.value) and (
+        is_kink |= (n_right == CellState.AGGREGATED.value) and (
             n_down == CellState.AGGREGATED.value
-        ):
-            is_kink = True
+        )
         #   X
         # A D X
         #   A
-        elif (n_left == CellState.AGGREGATED.value) and (
+        is_kink |= (n_left == CellState.AGGREGATED.value) and (
             n_down == CellState.AGGREGATED.value
-        ):
-            is_kink = True
+        )
         #   A
         # A D X
         #   X
-        elif (n_left == CellState.AGGREGATED.value) and (
+        is_kink |= (n_left == CellState.AGGREGATED.value) and (
             n_up == CellState.AGGREGATED.value
-        ):
-            is_kink = True
+        )
         #   A
         # X D A
         #   X
-        elif (n_right == CellState.AGGREGATED.value) and (
+        is_kink |= (n_right == CellState.AGGREGATED.value) and (
             n_up == CellState.AGGREGATED.value
-        ):
-            is_kink = True
+        )
+        
         if is_kink:
             print(f"Cell at ({cell_i}, {cell_j}) attached to kink")
             new_state[cell_i, cell_j] = CellState.AGGREGATED.value
