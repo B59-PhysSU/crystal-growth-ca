@@ -106,7 +106,6 @@ def attach_to_kink_step(
         n_left = state[pbc_indices(cell_i, cell_j - 1, state.shape[0])]
         n_right = state[pbc_indices(cell_i, cell_j + 1, state.shape[0])]
 
-        # Kink configurations starting from the top and going clockwise
         is_kink = False
 
         #   X
