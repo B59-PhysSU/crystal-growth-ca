@@ -41,6 +41,12 @@ parser.add_argument(
     action=argparse.BooleanOptionalAction,
     help="Plot the diffusing particles. Default is False",
 )
+parser.add_argument(
+    "--crop-aggregate",
+    default=False,
+    action=argparse.BooleanOptionalAction,
+    help="Crop the aggregate such that it is always zoomed in and centered. Default is False",
+)
 parser.add_argument("--dpi", default=300, type=int, help="The DPI of the saved image")
 args = parser.parse_args()
 
@@ -53,6 +59,11 @@ with np.load(npz_file) as data:
     state = data["state"]
     if not args.plot_diffusing:
         state[state == 1] = 0
+    if args.crop_aggregate:
+        x, y = np.where(state == 2)
+        min_x, max_x = np.min(x), np.max(x)
+        min_y, max_y = np.min(y), np.max(y)
+        state = state[min_x:max_x, min_y:max_y]
     plt.imshow(state)
     plt.set_cmap("viridis")
 
