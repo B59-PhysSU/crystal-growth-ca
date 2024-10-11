@@ -79,7 +79,7 @@ def find_articulation_points_bounded_core(
                         stack_state[stack_size - 1] = 1
                         continue
 
-                    if dir_idx >= 4:  # len(dirs)
+                    if dir_idx >= len(dirs_x):  # len(dirs)
                         # Finished processing all neighbors
                         stack_size -= 1
                         if stack_size > 0:  # If not root
