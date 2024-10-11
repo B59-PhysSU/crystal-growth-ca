@@ -6,7 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-
+from articulation_points import find_articulation_points
 
 def printerr(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -42,6 +42,12 @@ parser.add_argument(
     help="Plot the diffusing particles. Default is False",
 )
 parser.add_argument(
+    "--plot-articulation-points",
+    default=False,
+    action=argparse.BooleanOptionalAction,
+    help="Plot the articulation points. Default is False",
+)
+parser.add_argument(
     "--crop-aggregate",
     default=False,
     action=argparse.BooleanOptionalAction,
@@ -66,6 +72,10 @@ with np.load(npz_file) as data:
         state = state[min_x:max_x, min_y:max_y]
     plt.imshow(state)
     plt.set_cmap("viridis")
+    if args.plot_articulation_points:
+        articulation_points = find_articulation_points(state)
+        plt.imshow(articulation_points, cmap="Reds", alpha=0.5)
+        
 
 if args.save_image:
     if args.output_file is None:

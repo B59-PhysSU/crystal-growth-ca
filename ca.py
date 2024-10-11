@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numba import njit, prange, set_num_threads
 
+import articulation_points as graphs
+
 
 # each enum variant is a state of the cell
 # 0 - empty
@@ -54,7 +56,7 @@ def pbc_indices(i: int, j: int, n: int) -> Tuple[int, int]:
 # if any neighbour of a diffusing cell is aggregated, the diffusing cell becomes aggregated
 @njit(parallel=True)
 def aggregation_step(
-    state: np.ndarray, diffusing_list: np.ndarray
+    state: np.ndarray, diffusing_list: np.ndarray, do_not_aggregate_map: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     new_state = state.copy()
     new_diffusing_list = diffusing_list.copy()
@@ -62,7 +64,11 @@ def aggregation_step(
     keep_mask = np.ones(len(new_diffusing_list), dtype=np.uint8)
     for cell_idx in prange(len(new_diffusing_list)):
         cell_i, cell_j = new_diffusing_list[cell_idx]
-
+        if do_not_aggregate_map[cell_i, cell_j]:
+            print(
+                f"Cell at ({cell_i}, {cell_j}) cannot aggregate due to it being an articulation point"
+            )
+            continue
         neighbour_states = np.array(
             [
                 state[pbc_indices(cell_i + 1, cell_j, state.shape[0])],
@@ -71,7 +77,6 @@ def aggregation_step(
                 state[pbc_indices(cell_i, cell_j - 1, state.shape[0])],
             ]
         )
-
         if np.any(neighbour_states == CellState.AGGREGATED.value):
             new_state[cell_i, cell_j] = CellState.AGGREGATED.value
             keep_mask[cell_idx] = 0
@@ -91,7 +96,7 @@ def aggregation_step(
 # only when the diffusing cell is at the kink position, it becomes aggregated
 @njit(parallel=True)
 def attach_to_kink_step(
-    state: np.ndarray, diffusing_list: np.ndarray
+    state: np.ndarray, diffusing_list: np.ndarray, do_not_attach_map: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     new_state = state.copy()
     new_diffusing_list = diffusing_list.copy()
@@ -99,6 +104,12 @@ def attach_to_kink_step(
 
     for cell_idx in prange(len(new_diffusing_list)):
         cell_i, cell_j = new_diffusing_list[cell_idx]
+
+        if do_not_attach_map[cell_i, cell_j]:
+            print(
+                f"Cell at ({cell_i}, {cell_j}) cannot attach to a kink due to it being an articulation point"
+            )
+            continue
 
         # Neighbors in the 4 directions
         n_up = state[pbc_indices(cell_i - 1, cell_j, state.shape[0])]
@@ -132,7 +143,6 @@ def attach_to_kink_step(
         is_kink |= (n_right == CellState.AGGREGATED.value) and (
             n_up == CellState.AGGREGATED.value
         )
-        
         if is_kink:
             print(f"Cell at ({cell_i}, {cell_j}) attached to kink")
             new_state[cell_i, cell_j] = CellState.AGGREGATED.value
@@ -238,6 +248,24 @@ def step_simulation(
 ):
     nds(state, diffusing, nds_count, target_map, move_mask)  # nds works in place
 
+    # temporarily set diffusing cells to empty for the articulation point search
+    for cell_idx in prange(diffusing.shape[0]):
+        cell_i, cell_j = diffusing[cell_idx]
+        state[cell_i, cell_j] = CellState.EMPTY.value
+
+    aggregate_crop = graphs.get_crop_values(state, CellState.AGGREGATED.value, pad=10)
+    empty_graph_art_points = graphs.find_articulation_points(
+        state,
+        empty_value=CellState.EMPTY.value,
+        min_x=aggregate_crop[0],
+        max_x=aggregate_crop[1],
+        min_y=aggregate_crop[2],
+        max_y=aggregate_crop[3],
+    )
+    for cell_idx in prange(diffusing.shape[0]):
+        cell_i, cell_j = diffusing[cell_idx]
+        state[cell_i, cell_j] = CellState.DIFFUSING.value
+
     # split diffusing_list randomly in two sublists with attach_to_kink_probability
     # probability of a particle going to the attach_to_kink_step sub-list
     # and 1 - attach_to_kink_probability probability of a particle going to the aggregation_step sub-list
@@ -247,8 +275,40 @@ def step_simulation(
     diffusing_kink = diffusing[attach_to_kink_mask]
     diffusing_agg = diffusing[~attach_to_kink_mask]
 
-    state, diffusing_agg = aggregation_step(state, diffusing_agg)
-    state, diffusing_kink = attach_to_kink_step(state, diffusing_kink)
+    # print number of articulation points
+    state, diffusing_agg = aggregation_step(
+        state, diffusing_agg, do_not_aggregate_map=empty_graph_art_points
+    )
+    for cell_idx in prange(diffusing_kink.shape[0]):
+        cell_i, cell_j = diffusing_kink[cell_idx]
+        state[cell_i, cell_j] = CellState.EMPTY.value
+
+    for cell_idx in prange(diffusing_agg.shape[0]):
+        cell_i, cell_j = diffusing_agg[cell_idx]
+        state[cell_i, cell_j] = CellState.EMPTY.value
+
+    aggregate_crop = graphs.get_crop_values(state, CellState.AGGREGATED.value, pad=10)
+    empty_graph_art_points = graphs.find_articulation_points(
+        state,
+        empty_value=CellState.EMPTY.value,
+        min_x=aggregate_crop[0],
+        max_x=aggregate_crop[1],
+        min_y=aggregate_crop[2],
+        max_y=aggregate_crop[3],
+    )
+    state, diffusing_kink = attach_to_kink_step(
+        state,
+        diffusing_kink,
+        empty_graph_art_points,
+    )
+
+    for cell_idx in prange(diffusing_kink.shape[0]):
+        cell_i, cell_j = diffusing_kink[cell_idx]
+        state[cell_i, cell_j] = CellState.DIFFUSING.value
+
+    for cell_idx in prange(diffusing_agg.shape[0]):
+        cell_i, cell_j = diffusing_agg[cell_idx]
+        state[cell_i, cell_j] = CellState.DIFFUSING.value
 
     # concatenate the two sublists back together and shuffle
     diffusing = np.concatenate((diffusing_agg, diffusing_kink))
